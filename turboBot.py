@@ -14,6 +14,8 @@ async def on_message(message):
 
     if message.content.startswith('$hello'):
         await message.channel.send('Hello Jeyaprakash')
+    if message.content.startswith('$help'):
+        await message.channel.send('Ask @turboSt#2137')
     if message.content.startswith('$git'):
         await message.channel.send('https://github.com/turbotrail')
 client.run(os.getenv('DISCTOKEN'))
