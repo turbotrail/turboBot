@@ -1,1 +1,2 @@
-killall turboBot.py | python3 turboBot.py
+source ~/.profile | killall turboBot.py
+python3 turboBot.py &
