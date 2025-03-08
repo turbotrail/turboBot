@@ -1,0 +1,42 @@
+name: Deploy Discord Bot
+
+on:
+  push:
+    branches:
+      - master  # Adjust to match your branch name
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # Ensure it runs on your Raspberry Pi
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'  # Adjust based on your bot’s requirements
+
+      - name: Install Dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Stop Existing Bot
+        run: |
+          pkill -f "python turboBot.py" || echo "No running bot found"
+
+      - name: Start Bot
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          source venv/bin/activate
+          nohup python turboBot.py > bot.log 2>&1 &
+
+      - name: Confirm Bot is Running
+        run: pgrep -f "python turboBot.py" && echo "Bot is running" || echo "Bot failed to start"
