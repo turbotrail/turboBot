@@ -18,20 +18,33 @@ jobs:
           python -m venv venv
           source venv/bin/activate
           pip install -r requirements.txt
+      - name: Store Discord Bot Token in Environment
+        run: |
+          echo "DISCORD_BOT_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}" | sudo tee /etc/environment
 
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Stop Existing Bot
+      - name: Create systemd Service File
         run: |
-          pkill -f "python turboBot.py" || echo "No running bot found"
+          echo "[Unit]
+          Description=TurboBot Discord Bot
+          After=network.target
 
-      - name: Start Bot
-        env:
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          [Service]
+          Type=simple
+          User=pi
+          WorkingDirectory=/home/pi/actions-runner/_work/turboBot/turboBot
+          EnvironmentFile=/etc/environment
+          ExecStart=/home/pi/actions-runner/_work/turboBot/turboBot/venv/bin/python3 /home/pi/actions-runner/_work/turboBot/turboBot/bot.py
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target" | sudo tee /etc/systemd/system/turbobot.service
+
+      - name: Reload and Restart systemd Service
         run: |
-          source venv/bin/activate
-          nohup python turboBot.py > bot.log 2>&1 &
-
-      - name: Confirm Bot is Running
-        run: pgrep -f "python turboBot.py" && echo "Bot is running" || echo "Bot failed to start"
+          sudo systemctl daemon-reload
+          sudo systemctl enable turbobot
+          sudo systemctl restart turbobot
