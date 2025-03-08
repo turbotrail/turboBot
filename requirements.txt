@@ -3,3 +3,4 @@ asyncio
 ffmpeg
 PyNaCl
 yt-dlp
+dotenv
