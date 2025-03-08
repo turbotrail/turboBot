@@ -12,6 +12,9 @@ PREFIX = "!"
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents)
 
+# Global variable to store the rules message ID
+rules_message_id = None
+
 # Admin Commands
 @bot.command()
 @commands.has_permissions(kick_members=True)
@@ -84,8 +87,8 @@ async def stop(ctx):
         await ctx.send("Music stopped.")
     else:
         await ctx.send("No music is playing.")
-# Announcement System with Embed Support
 
+# Announcement System with Embed Support
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def announce(ctx, channel: discord.TextChannel, *, message):
@@ -105,7 +108,28 @@ async def add_reaction_role(ctx, message_id: int, emoji: str, role: discord.Role
 
 @bot.event
 async def on_raw_reaction_add(payload):
+    if payload.guild_id is None:
+        return  # Skip DMs
+
     guild = bot.get_guild(payload.guild_id)
+
+    # Check if this reaction is for the rules message in the #rules channel
+    if rules_message_id and payload.message_id == rules_message_id:
+        if str(payload.emoji) == "✅":  # Only verify if the reaction is a checkmark
+            role = discord.utils.get(guild.roles, name="Verified")
+            if not role:
+                # Create the Verified role if it doesn't exist
+                role = await guild.create_role(name="new", reason="Auto-created Verified role for rules reaction.")
+            member = guild.get_member(payload.user_id)
+            if member:
+                await member.add_roles(role)
+                try:
+                    await member.send(f"You've been verified with the **{role.name}** role!")
+                except discord.Forbidden:
+                    pass
+            return
+
+    # Existing reaction role handling
     if guild.id in reaction_roles:
         role_id = reaction_roles[guild.id].get((payload.message_id, str(payload.emoji)))
         if role_id:
@@ -113,7 +137,10 @@ async def on_raw_reaction_add(payload):
             member = guild.get_member(payload.user_id)
             if role and member:
                 await member.add_roles(role)
-                await member.send(f"You've been given the {role.name} role!")
+                try:
+                    await member.send(f"You've been given the **{role.name}** role!")
+                except discord.Forbidden:
+                    pass
 
 # Verification System (Multi-Guild Support)
 @bot.event
@@ -129,6 +156,25 @@ async def verify(ctx):
         await ctx.author.add_roles(role)
         await ctx.send(f"{ctx.author.mention} has been verified!")
 
+# Command to post the rules message in the #rules channel
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def post_rules(ctx):
+    global rules_message_id
+    # Ensure this command is run in the rules channel
+    if ctx.channel.name != "rules":
+        await ctx.send("Please run this command in the #rules channel.")
+        return
+    embed = discord.Embed(
+        title="Server Rules",
+        description="Please read and react with ✅ to verify that you accept the rules.",
+        color=discord.Color.green()
+    )
+    message = await ctx.send(embed=embed)
+    await message.add_reaction("✅")
+    rules_message_id = message.id
+    await ctx.send("Rules message posted and verification setup complete.")
+
 # Help Command
 @bot.command()
 async def info(ctx):
@@ -137,7 +183,7 @@ async def info(ctx):
     embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL]", inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
-    embed.add_field(name="✅ Verification", value="!verify", inline=False)
+    embed.add_field(name="✅ Verification", value="!verify or react to the rules message", inline=False)
     embed.add_field(name="ℹ️ User Info", value="!userinfo @user", inline=False)
     await ctx.send(embed=embed)
 
