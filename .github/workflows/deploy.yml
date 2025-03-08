@@ -36,7 +36,7 @@ jobs:
           User=pi
           WorkingDirectory=/home/pi/actions-runner/_work/turboBot/turboBot
           EnvironmentFile=/etc/environment
-          ExecStart=/home/pi/actions-runner/_work/turboBot/turboBot/venv/bin/python3 /home/pi/actions-runner/_work/turboBot/turboBot/bot.py
+          ExecStart=/home/pi/actions-runner/_work/turboBot/turboBot/venv/bin/python3 /home/pi/actions-runner/_work/turboBot/turboBot/turboBot.py
           Restart=always
           RestartSec=5
 
