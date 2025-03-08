@@ -24,6 +24,9 @@ jobs:
           source venv/bin/activate
           pip install -r requirements.txt
 
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Stop Existing Bot
         run: |
           pkill -f "python turboBot.py" || echo "No running bot found"
