@@ -119,7 +119,7 @@ async def on_raw_reaction_add(payload):
             role = discord.utils.get(guild.roles, name="Verified")
             if not role:
                 # Create the Verified role if it doesn't exist
-                role = await guild.create_role(name="new", reason="Auto-created Verified role for rules reaction.")
+                role = await guild.create_role(name="Verified", reason="Auto-created Verified role for rules reaction.")
             member = guild.get_member(payload.user_id)
             if member:
                 await member.add_roles(role)
@@ -151,7 +151,7 @@ async def on_member_join(member):
 
 @bot.command()
 async def verify(ctx):
-    role = discord.utils.get(ctx.guild.roles, name="Verified")
+    role = discord.utils.get(ctx.guild.roles, name="Founder")
     if role:
         await ctx.author.add_roles(role)
         await ctx.send(f"{ctx.author.mention} has been verified!")
@@ -167,7 +167,13 @@ async def post_rules(ctx):
         return
     embed = discord.Embed(
         title="Server Rules",
-        description="Please read and react with ✅ to verify that you accept the rules.",
+        description="Please read and react with ✅ to verify that you accept the rules \n"+
+        "Be Respectful: Treat every member with professionalism and courtesy.\n"+
+        "Maintain Confidentiality: Keep discussions and shared ideas within the community.\n"+
+        "Stay On Topic: Focus conversations on entrepreneurship, startups, and innovation.\n"+
+        "No Spam or Self-Promotion: Avoid excessive self-promotion and unsolicited advertising.\n"+
+        "Follow Discord Guidelines: Adhere to Discord’s community standards at all times.\n"+
+        "Constructive Collaboration: Share insights, provide helpful feedback, and foster a positive environment\n",
         color=discord.Color.green()
     )
     message = await ctx.send(embed=embed)
