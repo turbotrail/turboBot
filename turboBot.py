@@ -15,6 +15,49 @@ bot = commands.Bot(command_prefix=commands.when_mentioned_or(PREFIX), intents=in
 # Global variable to store the rules message ID
 rules_message_id = None
 
+# Audio quality settings per guild
+audio_quality_settings = {}
+# Default quality is medium
+DEFAULT_QUALITY = "medium"
+
+# Function to get FFmpeg options based on quality setting
+def get_ffmpeg_options(guild_id):
+    quality = audio_quality_settings.get(guild_id, DEFAULT_QUALITY)
+    
+    base_options = {
+        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    }
+    
+    if quality == "low":
+        base_options['options'] = '-vn -af "volume=0.8" -bufsize 1000k -ar 32000'
+    elif quality == "high":
+        base_options['options'] = '-vn -af "volume=0.8" -bufsize 6000k -ar 48000'
+    else:  # medium (default)
+        base_options['options'] = '-vn -af "volume=0.8" -bufsize 3000k -ar 44100'
+        
+    return base_options
+
+@bot.command()
+async def quality(ctx, setting=None):
+    """Set audio quality (low, medium, high) or show current setting"""
+    guild_id = ctx.guild.id
+    
+    if setting is None:
+        current = audio_quality_settings.get(guild_id, DEFAULT_QUALITY)
+        await ctx.send(f"Current audio quality: **{current}**\nAvailable options: low, medium, high")
+        return
+        
+    setting = setting.lower()
+    if setting not in ["low", "medium", "high"]:
+        await ctx.send("Invalid quality setting. Use 'low', 'medium', or 'high'")
+        return
+        
+    audio_quality_settings[guild_id] = setting
+    await ctx.send(f"Audio quality set to: **{setting}**")
+    
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        await ctx.send("This will take effect on the next song.")
+
 # Admin Commands
 @bot.command()
 @commands.has_permissions(kick_members=True)
@@ -69,8 +112,18 @@ async def play(ctx, url: str):
 async def play_next(ctx, guild_id):
     if guild_id in music_queues and len(music_queues[guild_id]) > 0:
         url = music_queues[guild_id].pop(0)
-        FFMPEG_OPTIONS = {'options': '-vn'}
-        ydl_opts = {'format': 'bestaudio'}
+        FFMPEG_OPTIONS = get_ffmpeg_options(guild_id)
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'quiet': True,
+            'no_warnings': True,
+            'default_search': 'auto',
+            'source_address': '0.0.0.0'
+        }
         
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -172,7 +225,7 @@ async def post_rules(ctx):
         "Maintain Confidentiality: Keep discussions and shared ideas within the community.\n"+
         "Stay On Topic: Focus conversations on entrepreneurship, startups, and innovation.\n"+
         "No Spam or Self-Promotion: Avoid excessive self-promotion and unsolicited advertising.\n"+
-        "Follow Discord Guidelines: Adhere to Discord’s community standards at all times.\n"+
+        "Follow Discord Guidelines: Adhere to Discord's community standards at all times.\n"+
         "Constructive Collaboration: Share insights, provide helpful feedback, and foster a positive environment\n",
         color=discord.Color.green()
     )
@@ -186,7 +239,7 @@ async def post_rules(ctx):
 async def info(ctx):
     embed = discord.Embed(title="🛠 Proton Bot Commands", description="Here is a list of available commands:", color=discord.Color.green())
     embed.add_field(name="🔹 Admin Commands", value="!kick, !ban, !clear", inline=False)
-    embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL]", inline=False)
+    embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL], !quality [low/medium/high]", inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
     embed.add_field(name="✅ Verification", value="!verify or react to the rules message", inline=False)
