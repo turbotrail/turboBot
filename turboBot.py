@@ -29,11 +29,11 @@ def get_ffmpeg_options(guild_id):
     }
     
     if quality == "low":
-        base_options['options'] = '-vn -af "volume=0.8" -bufsize 1000k -ar 32000'
+        base_options['options'] = '-vn -af "volume=0.7"'
     elif quality == "high":
-        base_options['options'] = '-vn -af "volume=0.8" -bufsize 6000k -ar 48000'
+        base_options['options'] = '-vn -af "volume=0.9"'
     else:  # medium (default)
-        base_options['options'] = '-vn -af "volume=0.8" -bufsize 3000k -ar 44100'
+        base_options['options'] = '-vn -af "volume=0.8"'
         
     return base_options
 
