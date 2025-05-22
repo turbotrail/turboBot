@@ -3,7 +3,9 @@ from discord.ext import commands, tasks
 import asyncio
 import os
 import yt_dlp as youtube_dl
-from datetime import datetime
+from datetime import datetime, timedelta
+import shutil
+import time
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -11,6 +13,16 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Secure token handling
 PREFIX = "!"
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents)
+
+# Create a downloads directory if it doesn't exist
+DOWNLOAD_DIR = "music_downloads"
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
+
+# File cleanup settings
+MAX_CACHE_SIZE_MB = 500  # Maximum size for the downloads folder (500 MB)
+MAX_FILE_AGE_DAYS = 7    # Files older than this will be deleted
+CLEANUP_INTERVAL = 60    # Check for cleanup every 60 minutes
 
 # Global variable to store the rules message ID
 rules_message_id = None
@@ -20,22 +32,97 @@ audio_quality_settings = {}
 # Default quality is medium
 DEFAULT_QUALITY = "medium"
 
+# Store information about currently playing songs
+current_songs = {}
+
+# Function to clean up old downloaded files
+def cleanup_old_files():
+    """Delete old downloaded files to save disk space"""
+    # Skip if directory doesn't exist
+    if not os.path.exists(DOWNLOAD_DIR):
+        return
+        
+    try:
+        # Get all files with their last modified time
+        files = []
+        total_size = 0
+        
+        for filename in os.listdir(DOWNLOAD_DIR):
+            file_path = os.path.join(DOWNLOAD_DIR, filename)
+            if os.path.isfile(file_path):
+                # Get file stats
+                file_size = os.path.getsize(file_path)
+                mod_time = os.path.getmtime(file_path)
+                
+                # Skip files that are currently being played
+                if any(song.get('file') == file_path for song in current_songs.values()):
+                    continue
+                    
+                files.append((file_path, mod_time, file_size))
+                total_size += file_size
+        
+        # Sort files by modification time (oldest first)
+        files.sort(key=lambda x: x[1])
+        
+        # Remove files older than MAX_FILE_AGE_DAYS
+        cutoff_time = time.time() - (MAX_FILE_AGE_DAYS * 86400)
+        for file_path, mod_time, _ in files[:]:
+            if mod_time < cutoff_time:
+                try:
+                    os.remove(file_path)
+                    files.remove((file_path, mod_time, _))
+                    print(f"Deleted old file: {file_path}")
+                except:
+                    pass
+        
+        # If we're still over the size limit, delete oldest files until we're under the limit
+        max_size_bytes = MAX_CACHE_SIZE_MB * 1024 * 1024
+        if total_size > max_size_bytes:
+            for file_path, _, file_size in files:
+                if total_size <= max_size_bytes:
+                    break
+                try:
+                    os.remove(file_path)
+                    total_size -= file_size
+                    print(f"Deleted file due to cache size limit: {file_path}")
+                except:
+                    pass
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+@tasks.loop(minutes=CLEANUP_INTERVAL)
+async def cleanup_task():
+    """Background task to clean up old files"""
+    cleanup_old_files()
+
+@bot.event
+async def on_ready():
+    print(f"{bot.user} is online and ready!")
+    cleanup_task.start()
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def cleanup(ctx):
+    """Manually trigger audio cache cleanup"""
+    await ctx.send("🧹 Cleaning up audio cache...")
+    cleanup_old_files()
+    
+    # Calculate current cache size
+    total_size = sum(os.path.getsize(os.path.join(DOWNLOAD_DIR, f)) 
+                     for f in os.listdir(DOWNLOAD_DIR) 
+                     if os.path.isfile(os.path.join(DOWNLOAD_DIR, f)))
+    
+    total_size_mb = total_size / (1024 * 1024)
+    await ctx.send(f"✅ Cleanup complete! Current cache size: {total_size_mb:.2f} MB")
+
 # Function to get FFmpeg options based on quality setting
 def get_ffmpeg_options(guild_id):
     quality = audio_quality_settings.get(guild_id, DEFAULT_QUALITY)
     
-    base_options = {
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    # Simple options that prioritize stability over quality
+    return {
+        'options': '-vn -af "volume=0.8"'
     }
-    
-    if quality == "low":
-        base_options['options'] = '-vn -af "volume=0.7"'
-    elif quality == "high":
-        base_options['options'] = '-vn -af "volume=0.9"'
-    else:  # medium (default)
-        base_options['options'] = '-vn -af "volume=0.8"'
-        
-    return base_options
 
 @bot.command()
 async def quality(ctx, setting=None):
@@ -92,6 +179,15 @@ async def join(ctx):
 @bot.command()
 async def leave(ctx):
     if ctx.voice_client:
+        guild_id = ctx.guild.id
+        # Clear the queue when leaving
+        if guild_id in music_queues:
+            music_queues[guild_id] = []
+        
+        # Stop any playing audio
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        
         await ctx.guild.voice_client.disconnect()
         await ctx.send("Disconnected from voice channel.")
     else:
@@ -103,43 +199,187 @@ async def play(ctx, url: str):
     if guild_id not in music_queues:
         music_queues[guild_id] = []
     
-    music_queues[guild_id].append(url)
-    if not ctx.voice_client.is_playing():
-        await play_next(ctx, guild_id)
-    else:
-        await ctx.send("Added to queue.")
+    # Join voice channel if not already in one
+    if not ctx.voice_client:
+        if ctx.author.voice:
+            await ctx.author.voice.channel.connect()
+        else:
+            await ctx.send("You must be in a voice channel.")
+            return
+    
+    async with ctx.typing():
+        try:
+            message = await ctx.send("⏳ Processing song...")
+            music_queues[guild_id].append(url)
+            
+            if not ctx.voice_client.is_playing():
+                await play_next(ctx, guild_id)
+            else:
+                await message.edit(content="✅ Added to queue!")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {str(e)}")
+
+async def download_audio(url, guild_id):
+    """Download the audio file and return the path"""
+    # Clean filename to avoid issues
+    clean_id = ''.join(c for c in url if c.isalnum())[-10:]
+    file_path = f"{DOWNLOAD_DIR}/{guild_id}_{clean_id}.mp3"
+    
+    # Check if we've already downloaded this file
+    if os.path.exists(file_path):
+        return file_path, None
+    
+    # Download options
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': file_path,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'noplaylist': True,
+        'quiet': True
+    }
+    
+    # Download the file
+    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get('title', 'Unknown Title')
+        return file_path, title
 
 async def play_next(ctx, guild_id):
     if guild_id in music_queues and len(music_queues[guild_id]) > 0:
         url = music_queues[guild_id].pop(0)
-        FFMPEG_OPTIONS = get_ffmpeg_options(guild_id)
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': False,
-            'logtostderr': False,
-            'quiet': True,
-            'no_warnings': True,
-            'default_search': 'auto',
-            'source_address': '0.0.0.0'
-        }
         
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            url2 = info['url']
-        
-        source = await discord.FFmpegOpusAudio.from_probe(url2, **FFMPEG_OPTIONS)
-        ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx, guild_id), bot.loop))
-        await ctx.send(f"Now playing: {info['title']}")
+        try:
+            # Send a "processing" message
+            processing_msg = await ctx.send("⏳ Downloading audio for better playback quality...")
+            
+            # Download the file instead of streaming
+            file_path, title = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: asyncio.run(download_audio(url, guild_id))
+            )
+            
+            if not title:
+                # If we reused a cached file, get the title
+                with youtube_dl.YoutubeDL({'quiet': True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    title = info.get('title', 'Unknown Title')
+            
+            # Store current song info
+            current_songs[guild_id] = {'title': title, 'url': url, 'file': file_path}
+            
+            # Simple audio source with basic options
+            source = discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(file_path, **get_ffmpeg_options(guild_id))
+            )
+            source.volume = 0.5  # Set a safe default volume
+            
+            # Play the audio
+            ctx.voice_client.play(
+                source,
+                after=lambda e: asyncio.run_coroutine_threadsafe(
+                    handle_song_complete(ctx, guild_id, e), bot.loop
+                )
+            )
+            
+            await processing_msg.edit(content=f"🎵 Now playing: **{title}**")
+            
+        except Exception as e:
+            await ctx.send(f"❌ Error playing track: {str(e)}")
+            # Try to play next song
+            await play_next(ctx, guild_id)
+
+async def handle_song_complete(ctx, guild_id, error):
+    """Handle when a song completes playing"""
+    if error:
+        print(f"Player error: {error}")
+    
+    # Mark the song as no longer being played
+    if guild_id in current_songs:
+        del current_songs[guild_id]
+    
+    # Play the next song if available
+    if guild_id in music_queues and len(music_queues[guild_id]) > 0:
+        await play_next(ctx, guild_id)
 
 @bot.command()
 async def stop(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await ctx.send("Music stopped.")
+        guild_id = ctx.guild.id
+        if guild_id in music_queues:
+            music_queues[guild_id] = []
+        await ctx.send("🛑 Music stopped and queue cleared.")
     else:
         await ctx.send("No music is playing.")
+
+@bot.command()
+async def skip(ctx):
+    """Skip the currently playing song"""
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭️ Skipped to next song")
+    else:
+        await ctx.send("No music is playing.")
+
+@bot.command()
+async def queue(ctx):
+    """Show the current queue"""
+    guild_id = ctx.guild.id
+    if guild_id not in music_queues or len(music_queues[guild_id]) == 0:
+        if guild_id in current_songs:
+            await ctx.send(f"🎵 Currently playing: **{current_songs[guild_id]['title']}**\n📋 Queue is empty.")
+        else:
+            await ctx.send("📋 Queue is empty.")
+        return
+    
+    # Format the queue
+    queue_list = "📋 **Queue:**\n"
+    if guild_id in current_songs:
+        queue_list += f"▶️ Now playing: **{current_songs[guild_id]['title']}**\n\n"
+    
+    for i, url in enumerate(music_queues[guild_id]):
+        with youtube_dl.YoutubeDL({'quiet': True}) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'Unknown Title')
+                queue_list += f"{i+1}. {title}\n"
+            except:
+                queue_list += f"{i+1}. {url}\n"
+    
+    await ctx.send(queue_list)
+
+@bot.command()
+async def volume(ctx, volume: int = None):
+    """Set the player volume (0-100)"""
+    if not ctx.voice_client or not ctx.voice_client.source:
+        await ctx.send("Nothing is playing right now.")
+        return
+    
+    if volume is None:
+        current_vol = int(ctx.voice_client.source.volume * 100)
+        await ctx.send(f"🔊 Current volume: **{current_vol}%**")
+        return
+    
+    if not 0 <= volume <= 100:
+        await ctx.send("⚠️ Volume must be between 0 and 100")
+        return
+    
+    ctx.voice_client.source.volume = volume / 100
+    await ctx.send(f"🔊 Volume set to **{volume}%**")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Clean up when the bot is disconnected from a voice channel"""
+    if member.id == bot.user.id and before.channel and not after.channel:
+        # Bot was disconnected
+        guild_id = before.channel.guild.id
+        if guild_id in music_queues:
+            music_queues[guild_id] = []
+        if guild_id in current_songs:
+            del current_songs[guild_id]
 
 # Announcement System with Embed Support
 @bot.command()
@@ -238,8 +478,8 @@ async def post_rules(ctx):
 @bot.command()
 async def info(ctx):
     embed = discord.Embed(title="🛠 Proton Bot Commands", description="Here is a list of available commands:", color=discord.Color.green())
-    embed.add_field(name="🔹 Admin Commands", value="!kick, !ban, !clear", inline=False)
-    embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL], !quality [low/medium/high]", inline=False)
+    embed.add_field(name="🔹 Admin Commands", value="!kick, !ban, !clear, !cleanup", inline=False)
+    embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL], !skip, !stop, !queue, !volume [0-100]", inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
     embed.add_field(name="✅ Verification", value="!verify or react to the rules message", inline=False)
