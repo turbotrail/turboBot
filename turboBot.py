@@ -194,7 +194,8 @@ async def leave(ctx):
         await ctx.send("I'm not in a voice channel.")
 
 @bot.command()
-async def play(ctx, url: str):
+async def play(ctx, *, query: str):
+    """Play a song by URL or search term"""
     guild_id = ctx.guild.id
     if guild_id not in music_queues:
         music_queues[guild_id] = []
@@ -210,14 +211,59 @@ async def play(ctx, url: str):
     async with ctx.typing():
         try:
             message = await ctx.send("⏳ Processing song...")
+            
+            # Check if the query is a URL or a search term
+            if query.startswith(('http://', 'https://')):
+                # It's a URL, use it directly
+                url = query
+                await message.edit(content=f"🔎 Processing URL: {url}")
+            else:
+                # It's a search term, search YouTube
+                await message.edit(content=f"🔎 Searching YouTube for: **{query}**")
+                url = await search_youtube(query)
+                if not url:
+                    await message.edit(content=f"❌ No results found for: **{query}**")
+                    return
+            
             music_queues[guild_id].append(url)
             
             if not ctx.voice_client.is_playing():
                 await play_next(ctx, guild_id)
             else:
-                await message.edit(content="✅ Added to queue!")
+                # Get song title for better user feedback
+                with youtube_dl.YoutubeDL({'quiet': True}) as ydl:
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                        title = info.get('title', 'Unknown Title')
+                        await message.edit(content=f"✅ Added to queue: **{title}**")
+                    except:
+                        await message.edit(content="✅ Added to queue!")
         except Exception as e:
             await ctx.send(f"❌ Error: {str(e)}")
+
+async def search_youtube(query):
+    """Search YouTube and return the URL of the first result"""
+    search_opts = {
+        'format': 'bestaudio/best',
+        'default_search': 'ytsearch',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True  # Do not download, just get info
+    }
+    
+    try:
+        # Add ytsearch: prefix to force a search
+        with youtube_dl.YoutubeDL(search_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch:{query}", download=False)
+            
+            if 'entries' in info and info['entries']:
+                # Get the first result
+                return f"https://www.youtube.com/watch?v={info['entries'][0]['id']}"
+    except Exception as e:
+        print(f"Search error: {str(e)}")
+    
+    return None
 
 async def download_audio(url, guild_id):
     """Download the audio file and return the path"""
@@ -533,12 +579,66 @@ async def post_rules(ctx):
 async def info(ctx):
     embed = discord.Embed(title="🛠 Proton Bot Commands", description="Here is a list of available commands:", color=discord.Color.green())
     embed.add_field(name="🔹 Admin Commands", value="!kick, !ban, !clear, !cleanup", inline=False)
-    embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL], !skip, !stop, !queue, !volume [0-100]", inline=False)
+    embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL or song name], !search [song name], !skip, !stop, !queue, !volume [0-100]", inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
     embed.add_field(name="✅ Verification", value="!verify or react to the rules message", inline=False)
     embed.add_field(name="ℹ️ User Info", value="!userinfo @user", inline=False)
     await ctx.send(embed=embed)
+
+@bot.command()
+async def search(ctx, *, query: str):
+    """Search for songs on YouTube and display top 5 results"""
+    if not query:
+        await ctx.send("Please provide a search term.")
+        return
+    
+    async with ctx.typing():
+        try:
+            message = await ctx.send(f"🔎 Searching YouTube for: **{query}**")
+            
+            # Search YouTube for multiple results
+            search_opts = {
+                'format': 'bestaudio/best',
+                'default_search': 'ytsearch5',  # Get top 5 results
+                'noplaylist': True,
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True
+            }
+            
+            with youtube_dl.YoutubeDL(search_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+                
+                if 'entries' not in info or not info['entries']:
+                    await message.edit(content=f"❌ No results found for: **{query}**")
+                    return
+                
+                results = []
+                for i, entry in enumerate(info['entries'], 1):
+                    video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                    title = entry.get('title', 'Unknown Title')
+                    duration = entry.get('duration')
+                    
+                    time_str = ""
+                    if duration:
+                        minutes, seconds = divmod(duration, 60)
+                        time_str = f" ({minutes}:{seconds:02d})"
+                    
+                    results.append(f"{i}. **{title}**{time_str}\n   `!play {video_url}`")
+                
+                # Create embed for results
+                embed = discord.Embed(
+                    title=f"🔍 Search Results for '{query}'",
+                    description="\n".join(results),
+                    color=discord.Color.blue()
+                )
+                embed.set_footer(text="To play a song, use the command shown below each result.")
+                
+                await message.edit(content=None, embed=embed)
+                
+        except Exception as e:
+            await ctx.send(f"❌ Error during search: {str(e)}")
 
 # General Utilities
 @bot.command()
