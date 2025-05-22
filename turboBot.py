@@ -221,32 +221,60 @@ async def play(ctx, url: str):
 
 async def download_audio(url, guild_id):
     """Download the audio file and return the path"""
-    # Clean filename to avoid issues
-    clean_id = ''.join(c for c in url if c.isalnum())[-10:]
-    file_path = f"{DOWNLOAD_DIR}/{guild_id}_{clean_id}.mp3"
-    
-    # Check if we've already downloaded this file
-    if os.path.exists(file_path):
-        return file_path, None
-    
-    # Download options
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': file_path,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'noplaylist': True,
-        'quiet': True
-    }
-    
-    # Download the file
-    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = info.get('title', 'Unknown Title')
-        return file_path, title
+    try:
+        # Clean filename to avoid issues
+        clean_id = ''.join(c for c in url if c.isalnum())[-10:]
+        file_path = f"{DOWNLOAD_DIR}/{guild_id}_{clean_id}.mp3"
+        temp_path = f"{DOWNLOAD_DIR}/temp_{guild_id}_{clean_id}.%(ext)s"
+        
+        # Check if we've already downloaded this file
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return file_path, None
+        
+        # Download options with better error handling
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': temp_path,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'noplaylist': True,
+            'no_warnings': False,
+            'ignoreerrors': False,
+            'quiet': False,
+            'verbose': True,
+            'extract_flat': False,
+            'force_generic_extractor': False,
+            'cachedir': False,
+            'nocheckcertificate': True
+        }
+        
+        # Download the file
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Unknown Title')
+            
+            # Verify the file was created (could be with a different extension)
+            downloaded_file = None
+            for filename in os.listdir(DOWNLOAD_DIR):
+                if filename.startswith(f"temp_{guild_id}_{clean_id}") and os.path.isfile(os.path.join(DOWNLOAD_DIR, filename)):
+                    downloaded_file = os.path.join(DOWNLOAD_DIR, filename)
+                    break
+            
+            if downloaded_file and os.path.exists(downloaded_file):
+                # Rename/move to our expected mp3 path
+                shutil.move(downloaded_file, file_path)
+                return file_path, title
+            else:
+                # If downloaded file not found, try to use direct URL for streaming
+                return None, title
+                
+    except Exception as e:
+        print(f"Download error: {str(e)}")
+        # Return None to indicate failure
+        return None, None
 
 async def play_next(ctx, guild_id):
     if guild_id in music_queues and len(music_queues[guild_id]) > 0:
@@ -262,18 +290,44 @@ async def play_next(ctx, guild_id):
             )
             
             if not title:
-                # If we reused a cached file, get the title
+                # If download failed, try to get title at least
                 with youtube_dl.YoutubeDL({'quiet': True}) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    title = info.get('title', 'Unknown Title')
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                        title = info.get('title', 'Unknown Title')
+                    except:
+                        title = "Unknown Track"
             
             # Store current song info
             current_songs[guild_id] = {'title': title, 'url': url, 'file': file_path}
             
-            # Simple audio source with basic options
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(file_path, **get_ffmpeg_options(guild_id))
-            )
+            # If we have a file path, play from file, otherwise try direct URL streaming
+            if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                # Play from file
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(file_path, **get_ffmpeg_options(guild_id))
+                )
+            else:
+                # Fallback to streaming
+                await processing_msg.edit(content="⚠️ Download failed, falling back to streaming mode...")
+                
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'noplaylist': True,
+                    'quiet': True
+                }
+                
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    stream_url = info['url']
+                
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(
+                        stream_url, 
+                        **{'before_options': '-reconnect 1 -reconnect_streamed 1', 'options': '-vn'}
+                    )
+                )
+            
             source.volume = 0.5  # Set a safe default volume
             
             # Play the audio
