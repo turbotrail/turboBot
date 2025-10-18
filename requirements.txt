@@ -4,3 +4,4 @@ ffmpeg
 PyNaCl
 yt-dlp
 dotenv
+aiohttp
