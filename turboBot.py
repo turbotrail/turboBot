@@ -35,6 +35,9 @@ DEFAULT_QUALITY = "medium"
 # Store information about currently playing songs
 current_songs = {}
 
+# Track active reminder tasks per user and guild
+reminder_tasks = {}
+
 # Function to clean up old downloaded files
 def cleanup_old_files():
     """Delete old downloaded files to save disk space"""
@@ -580,6 +583,7 @@ async def info(ctx):
     embed = discord.Embed(title="🛠 Proton Bot Commands", description="Here is a list of available commands:", color=discord.Color.green())
     embed.add_field(name="🔹 Admin Commands", value="!kick, !ban, !clear, !cleanup", inline=False)
     embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL or song name], !search [song name], !skip, !stop, !queue, !volume [0-100]", inline=False)
+    embed.add_field(name="⏰ Reminders", value="!remindme [interval_minutes] [total_duration] [message] (duration supports m/h, e.g. `2h`)\n!cancelreminder", inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
     embed.add_field(name="✅ Verification", value="!verify or react to the rules message", inline=False)
@@ -639,6 +643,125 @@ async def search(ctx, *, query: str):
                 
         except Exception as e:
             await ctx.send(f"❌ Error during search: {str(e)}")
+
+# Reminder System
+def _reminder_key(ctx):
+    """Generate a unique key for a user's reminders scoped to a guild or DM."""
+    guild_id = ctx.guild.id if ctx.guild else None
+    return (guild_id, ctx.author.id)
+
+
+def _parse_total_duration(raw_duration):
+    """Convert user-provided duration into minutes with support for hours."""
+    normalized = raw_duration.strip().lower()
+    if not normalized:
+        return None, None
+
+    hour_suffixes = ("hours", "hour", "hrs", "hr", "h")
+    minute_suffixes = ("minutes", "minute", "mins", "min", "m")
+
+    def parse_number(text):
+        try:
+            return float(text.strip())
+        except ValueError:
+            return None
+
+    for suffix in hour_suffixes:
+        if normalized.endswith(suffix):
+            value = parse_number(normalized[:-len(suffix)])
+            if value is None:
+                return None, None
+            total_minutes = int(value * 60)
+            display = f"{format(value, 'g')} hour{'s' if value != 1 else ''} (~{total_minutes} minutes)"
+            return total_minutes, display
+
+    for suffix in minute_suffixes:
+        if normalized.endswith(suffix):
+            value = parse_number(normalized[:-len(suffix)])
+            if value is None:
+                return None, None
+            total_minutes = int(value)
+            display = f"{total_minutes} minute{'s' if total_minutes != 1 else ''}"
+            return total_minutes, display
+
+    value = parse_number(normalized)
+    if value is None:
+        return None, None
+    total_minutes = int(value)
+    display = f"{total_minutes} minute{'s' if total_minutes != 1 else ''}"
+    return total_minutes, display
+
+
+async def reminder_worker(channel, author, interval_minutes, total_minutes, message, key):
+    """Send reminder messages at the requested cadence until the period ends."""
+    interval_seconds = interval_minutes * 60
+    total_seconds = total_minutes * 60
+    elapsed = 0
+
+    try:
+        while elapsed < total_seconds:
+            sleep_time = min(interval_seconds, total_seconds - elapsed)
+            await asyncio.sleep(sleep_time)
+            elapsed += sleep_time
+            await channel.send(f"{author.mention} {message}")
+
+        await channel.send(f"✅ Reminder window finished for {author.mention}.")
+    except asyncio.CancelledError:
+        raise
+    finally:
+        reminder_tasks.pop(key, None)
+
+
+@bot.command()
+async def remindme(ctx, interval_minutes: int, total_duration: str, *, message: str = None):
+    """Start a configurable repeated reminder."""
+    total_minutes, duration_label = _parse_total_duration(total_duration)
+
+    if interval_minutes <= 0:
+        await ctx.send("⚠️ Interval must be a positive number of minutes.")
+        return
+
+    if total_minutes is None:
+        await ctx.send("⚠️ Could not understand the total duration. Try values like `60`, `90m`, or `2h`.")
+        return
+
+    if total_minutes <= 0:
+        await ctx.send("⚠️ Interval and duration must be positive minutes.")
+        return
+
+    if interval_minutes > total_minutes:
+        await ctx.send("⚠️ Interval must be less than or equal to the total duration.")
+        return
+
+    key = _reminder_key(ctx)
+    if key in reminder_tasks:
+        await ctx.send("⏭️ You already have an active reminder. Use !cancelreminder first.")
+        return
+
+    reminder_text = message.strip() if message else "Just checking in!"
+    reminder_tasks[key] = bot.loop.create_task(
+        reminder_worker(ctx.channel, ctx.author, interval_minutes, total_minutes, reminder_text, key)
+    )
+
+    interval_label = f"{interval_minutes} minute{'s' if interval_minutes != 1 else ''}"
+    duration_msg = duration_label or f"{total_minutes} minutes"
+    await ctx.send(
+        f"⏱️ {ctx.author.mention} I'll remind you every {interval_label} for the next {duration_msg}."
+    )
+
+
+@bot.command()
+async def cancelreminder(ctx):
+    """Stop the active reminder for the user."""
+    key = _reminder_key(ctx)
+    task = reminder_tasks.get(key)
+
+    if not task:
+        await ctx.send("ℹ️ You don't have any active reminders.")
+        return
+
+    task.cancel()
+    await ctx.send(f"🛑 Reminder canceled for {ctx.author.mention}.")
 
 # General Utilities
 @bot.command()
