@@ -1,11 +1,13 @@
-import discord
-from discord.ext import commands, tasks
 import asyncio
+import aiohttp
 import os
 import yt_dlp as youtube_dl
 from datetime import datetime, timedelta
 import shutil
 import time
+import discord
+from discord.ext import commands, tasks
+from discord.utils import escape_mentions
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -13,6 +15,13 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Secure token handling
 PREFIX = "!"
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents)
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.0.242:11434")
+DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+OLLAMA_ALLOWED_ROLE = "AI"
+OLLAMA_REQUIRE_MANAGE_MESSAGES = os.getenv("OLLAMA_REQUIRE_MANAGE_MESSAGES", "true").lower() not in ("false", "0", "off", "no")
+OLLAMA_MAX_PROMPT_LENGTH = int(os.getenv("OLLAMA_MAX_PROMPT_LENGTH", "600"))
+OLLAMA_MAX_RESPONSE_LENGTH = int(os.getenv("OLLAMA_MAX_RESPONSE_LENGTH", "3500"))
 
 # Create a downloads directory if it doesn't exist
 DOWNLOAD_DIR = "music_downloads"
@@ -37,6 +46,39 @@ current_songs = {}
 
 # Track active reminder tasks per user and guild
 reminder_tasks = {}
+
+def chunk_message(text, limit=1900):
+    """Split long text into Discord-safe chunks."""
+    if not text:
+        return ["(No content)"]
+
+    chunks = []
+    buffer = ""
+    for line in text.splitlines():
+        line = line.rstrip()
+        if len(line) > limit:
+            if buffer:
+                chunks.append(buffer)
+                buffer = ""
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            if line:
+                buffer = line
+            continue
+
+        tentative = f"{buffer}\n{line}" if buffer else line
+        if len(tentative) > limit:
+            if buffer:
+                chunks.append(buffer)
+            buffer = line
+        else:
+            buffer = tentative
+
+    if buffer:
+        chunks.append(buffer)
+
+    return chunks
 
 # Function to clean up old downloaded files
 def cleanup_old_files():
@@ -584,6 +626,13 @@ async def info(ctx):
     embed.add_field(name="🔹 Admin Commands", value="!kick, !ban, !clear, !cleanup", inline=False)
     embed.add_field(name="🎵 Music Commands", value="!join, !leave, !play [URL or song name], !search [song name], !skip, !stop, !queue, !volume [0-100]", inline=False)
     embed.add_field(name="⏰ Reminders", value="!remindme [interval_minutes] [total_duration] [message] (duration supports m/h, e.g. `2h`)\n!cancelreminder", inline=False)
+    ai_details = f"!askollama [prompt] (uses {DEFAULT_OLLAMA_MODEL} via Ollama"
+    if OLLAMA_ALLOWED_ROLE:
+        ai_details += f"; requires `{OLLAMA_ALLOWED_ROLE}` role"
+    elif OLLAMA_REQUIRE_MANAGE_MESSAGES:
+        ai_details += "; requires Manage Messages permission"
+    ai_details += ")"
+    embed.add_field(name="🤖 AI Assistant", value=ai_details, inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
     embed.add_field(name="✅ Verification", value="!verify or react to the rules message", inline=False)
@@ -762,6 +811,85 @@ async def cancelreminder(ctx):
 
     task.cancel()
     await ctx.send(f"🛑 Reminder canceled for {ctx.author.mention}.")
+
+
+# Ollama Integration
+async def query_ollama(prompt, model=DEFAULT_OLLAMA_MODEL):
+    """Send a prompt to the configured Ollama instance and return the response text."""
+    if not OLLAMA_BASE_URL:
+        raise RuntimeError("OLLAMA_BASE_URL is not configured.")
+
+    url = OLLAMA_BASE_URL.rstrip("/") + "/api/generate"
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False
+    }
+
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.post(url, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"Ollama error {response.status}: {error_text.strip()[:200]}")
+                data = await response.json()
+                return data.get("response", "").strip()
+        except aiohttp.ClientError as exc:
+            raise RuntimeError(f"Network error contacting Ollama: {exc}")
+
+
+@bot.command()
+@commands.cooldown(1, 30, commands.BucketType.user)
+async def askollama(ctx, *, prompt: str = None):
+    """Send a question to the local Ollama model and return the answer."""
+    if not prompt:
+        await ctx.send("Please provide a prompt, e.g. `!askollama explain reinforcement learning`.")
+        return
+
+    if ctx.guild:
+        if OLLAMA_ALLOWED_ROLE:
+            required_role = discord.utils.get(ctx.guild.roles, name=OLLAMA_ALLOWED_ROLE)
+            if not required_role or required_role not in ctx.author.roles:
+                await ctx.send(f"🚫 You need the `{OLLAMA_ALLOWED_ROLE}` role to use this command.")
+                return
+        elif OLLAMA_REQUIRE_MANAGE_MESSAGES and not ctx.author.guild_permissions.manage_messages:
+            await ctx.send("🚫 You need the Manage Messages permission to use this command in this server.")
+            return
+
+    cleaned_prompt = prompt.strip()
+    if not cleaned_prompt:
+        await ctx.send("⚠️ Prompt cannot be empty after trimming whitespace.")
+        return
+
+    if len(cleaned_prompt) > OLLAMA_MAX_PROMPT_LENGTH:
+        await ctx.send(f"⚠️ Prompt is too long. Limit it to {OLLAMA_MAX_PROMPT_LENGTH} characters.")
+        return
+
+    status_message = await ctx.send("🤖 Contacting Ollama...")
+
+    try:
+        reply = await query_ollama(cleaned_prompt)
+        if not reply:
+            reply = "(Ollama returned an empty response.)"
+
+        safe_reply = escape_mentions(reply)
+        if len(safe_reply) > OLLAMA_MAX_RESPONSE_LENGTH:
+            safe_reply = safe_reply[:OLLAMA_MAX_RESPONSE_LENGTH].rstrip() + "\n\n[…truncated…]"
+
+        await status_message.edit(content="✅ Response received:")
+        for chunk in chunk_message(safe_reply):
+            await ctx.send(chunk)
+    except Exception as exc:
+        await status_message.edit(content="❌ Failed to fetch response from Ollama.")
+        await ctx.send(f"Error: {exc}")
+
+
+@askollama.error
+async def askollama_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Hold on! Try again in {error.retry_after:.1f} seconds.")
+
 
 # General Utilities
 @bot.command()
