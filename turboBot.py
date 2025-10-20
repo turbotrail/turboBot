@@ -3,6 +3,7 @@ import aiohttp
 import os
 import yt_dlp as youtube_dl
 from datetime import datetime, timedelta
+from collections import defaultdict, deque
 import shutil
 import time
 import discord
@@ -22,6 +23,13 @@ OLLAMA_ALLOWED_ROLE = "AI"
 OLLAMA_REQUIRE_MANAGE_MESSAGES = os.getenv("OLLAMA_REQUIRE_MANAGE_MESSAGES", "true").lower() not in ("false", "0", "off", "no")
 OLLAMA_MAX_PROMPT_LENGTH = int(os.getenv("OLLAMA_MAX_PROMPT_LENGTH", "600"))
 OLLAMA_MAX_RESPONSE_LENGTH = int(os.getenv("OLLAMA_MAX_RESPONSE_LENGTH", "3500"))
+AI_CHAT_CHANNEL_NAMES = {"ai-lounge"}
+AI_CHAT_HISTORY_LENGTH = 6
+AI_SYSTEM_PROMPT = (
+    "You are TurboBot, a polite and encouraging assistant for the Proton community. "
+    "Keep responses friendly, concise (under 120 words), and actionable. "
+    "If you are unsure about something, say so honestly."
+)
 
 # Create a downloads directory if it doesn't exist
 DOWNLOAD_DIR = "music_downloads"
@@ -46,6 +54,9 @@ current_songs = {}
 
 # Track active reminder tasks per user and guild
 reminder_tasks = {}
+
+# Conversation history per AI lounge channel
+ai_channel_history = defaultdict(lambda: deque(maxlen=AI_CHAT_HISTORY_LENGTH * 2))
 
 def chunk_message(text, limit=1900):
     """Split long text into Discord-safe chunks."""
@@ -79,6 +90,59 @@ def chunk_message(text, limit=1900):
         chunks.append(buffer)
 
     return chunks
+
+
+def sanitize_for_discord(text):
+    """Clean LLM output so it is safe to post to Discord."""
+    safe = escape_mentions((text or "").strip())
+    if len(safe) > OLLAMA_MAX_RESPONSE_LENGTH:
+        safe = safe[:OLLAMA_MAX_RESPONSE_LENGTH].rstrip() + "\n\n[…truncated…]"
+    return safe or "(No response provided.)"
+
+
+def describe_user_message(message):
+    """Summarize a Discord message for context when sending to the LLM."""
+    content = (message.content or "").strip()
+    if content:
+        content = content.replace("@everyone", "[everyone]").replace("@here", "[here]")
+    parts = [content] if content else []
+
+    if message.attachments:
+        attachment_names = ", ".join(att.filename for att in message.attachments)
+        parts.append(f"(Attachments: {attachment_names})")
+
+    if not parts:
+        parts.append("(User sent an empty message.)")
+
+    return " ".join(parts).strip()
+
+
+def build_ai_chat_prompt(history):
+    """Create an instructional prompt for the LLM using the stored conversation."""
+
+    def render_prompt(items):
+        conversation_lines = []
+        for role, content in items:
+            label = "User" if role == "user" else "Assistant"
+            conversation_lines.append(f"{label}: {content}")
+        conversation_body = "\n".join(conversation_lines) if conversation_lines else "User: Hello!"
+        return f"{AI_SYSTEM_PROMPT}\n\nConversation so far:\n{conversation_body}\nAssistant:"
+
+    trimmed_history = list(history)
+    prompt = render_prompt(trimmed_history)
+
+    while len(prompt) > OLLAMA_MAX_PROMPT_LENGTH and len(trimmed_history) > 2:
+        trimmed_history = trimmed_history[2:]
+        prompt = render_prompt(trimmed_history)
+
+    if len(prompt) > OLLAMA_MAX_PROMPT_LENGTH and trimmed_history:
+        role, content = trimmed_history[-1]
+        trimmed_history[-1] = (role, content[-(OLLAMA_MAX_PROMPT_LENGTH // 2):])
+        prompt = render_prompt(trimmed_history)
+
+    history.clear()
+    history.extend(trimmed_history)
+    return prompt
 
 # Function to clean up old downloaded files
 def cleanup_old_files():
@@ -632,6 +696,9 @@ async def info(ctx):
     elif OLLAMA_REQUIRE_MANAGE_MESSAGES:
         ai_details += "; requires Manage Messages permission"
     ai_details += ")"
+    if AI_CHAT_CHANNEL_NAMES:
+        channel_list = ", ".join(sorted(AI_CHAT_CHANNEL_NAMES))
+        ai_details += f"\nAI lounge chat in: {channel_list}"
     embed.add_field(name="🤖 AI Assistant", value=ai_details, inline=False)
     embed.add_field(name="📢 Announcement", value="!announce #channel [message]", inline=False)
     embed.add_field(name="🔘 Reaction Roles", value="!add_reaction_role [message_id] [emoji] @role", inline=False)
@@ -873,9 +940,7 @@ async def askollama(ctx, *, prompt: str = None):
         if not reply:
             reply = "(Ollama returned an empty response.)"
 
-        safe_reply = escape_mentions(reply)
-        if len(safe_reply) > OLLAMA_MAX_RESPONSE_LENGTH:
-            safe_reply = safe_reply[:OLLAMA_MAX_RESPONSE_LENGTH].rstrip() + "\n\n[…truncated…]"
+        safe_reply = sanitize_for_discord(reply)
 
         await status_message.edit(content="✅ Response received:")
         for chunk in chunk_message(safe_reply):
@@ -885,10 +950,59 @@ async def askollama(ctx, *, prompt: str = None):
         await ctx.send(f"Error: {exc}")
 
 
+async def handle_ai_channel_message(message):
+    """Respond to casual conversation in AI-designated lounge channels."""
+    channel_id = message.channel.id
+    history = ai_channel_history[channel_id]
+
+    user_turn = describe_user_message(message)
+    history.append(("user", user_turn))
+
+    prompt = build_ai_chat_prompt(history)
+
+    try:
+        async with message.channel.typing():
+            reply = await query_ollama(prompt)
+    except Exception as exc:
+        await message.channel.send(f"⚠️ I couldn't reach the AI service: {exc}")
+        return
+
+    if not reply:
+        await message.channel.send("🤔 I didn't get a response from the model that time.")
+        return
+
+    safe_reply = sanitize_for_discord(reply)
+    history.append(("assistant", safe_reply))
+
+    for chunk in chunk_message(safe_reply):
+        await message.channel.send(chunk)
+
+
 @askollama.error
 async def askollama_error(ctx, error):
     if isinstance(error, commands.CommandOnCooldown):
         await ctx.send(f"⏳ Hold on! Try again in {error.retry_after:.1f} seconds.")
+
+
+@bot.event
+async def on_message(message):
+    if message.author == bot.user or message.author.bot:
+        return
+
+    ctx = await bot.get_context(message)
+
+    if ctx.valid:
+        await bot.process_commands(message)
+        return
+
+    if message.guild and isinstance(message.channel, discord.TextChannel):
+        channel_name = (message.channel.name or "").lower()
+        if channel_name in AI_CHAT_CHANNEL_NAMES:
+            await handle_ai_channel_message(message)
+            await bot.process_commands(message)
+            return
+
+    await bot.process_commands(message)
 
 
 # General Utilities
