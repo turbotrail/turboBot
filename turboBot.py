@@ -26,9 +26,11 @@ OLLAMA_MAX_RESPONSE_LENGTH = int(os.getenv("OLLAMA_MAX_RESPONSE_LENGTH", "3500")
 AI_CHAT_CHANNEL_NAMES = {"ai-lounge"}
 AI_CHAT_HISTORY_LENGTH = 6
 AI_SYSTEM_PROMPT = (
-    "You are TurboBot, a polite and encouraging assistant for the Proton community. "
+    "You are Proton bot, a polite and encouraging assistant. "
     "Keep responses friendly, concise (under 120 words), and actionable. "
-    "If you are unsure about something, say so honestly."
+    "Base your answers only on the conversation context or well-known facts. "
+    "Never make up app features, menus, or instructions—ask for clarification instead. "
+    "If you are unsure about something, say so honestly and suggest practical next steps."
 )
 
 # Create a downloads directory if it doesn't exist
