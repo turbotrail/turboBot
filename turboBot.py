@@ -1,5 +1,4 @@
 import json
-AGENT_DEBUG = os.getenv("AGENT_DEBUG", "false").lower() in ("1", "true", "yes")
 import asyncio
 import aiohttp
 import os
@@ -13,6 +12,7 @@ from discord.ext import commands, tasks
 from discord.utils import escape_mentions
 from dotenv import load_dotenv
 load_dotenv()
+AGENT_DEBUG = os.getenv("AGENT_DEBUG", "false").lower() in ("1", "true", "yes")
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Secure token handling
 PREFIX = "!"
