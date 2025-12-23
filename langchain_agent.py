@@ -6,7 +6,7 @@ from typing import List
 from langchain_classic.agents.react.agent import create_react_agent
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.tools import Tool
+from langchain.tools import tool
 
 from ddgs import DDGS
 import trafilatura
@@ -54,6 +54,7 @@ init_cache()
 # TOOLS (without @tool decorator)
 # -------------------------
 
+@tool
 def web_search(query: str) -> str:
     """Search the web for current or factual information. Always include sources."""
     results = []
@@ -65,6 +66,7 @@ def web_search(query: str) -> str:
     return "\n".join(results) or "No search results."
 
 
+@tool
 def scrape_page(url: str) -> str:
     """Scrape a webpage to extract detailed information. Preserve the source."""
     try:
@@ -78,6 +80,7 @@ def scrape_page(url: str) -> str:
 # -------------------------
 # QUERY ROUTER
 # -------------------------
+
 
 def classify_query(query: str) -> str:
     q = query.lower()
@@ -99,18 +102,7 @@ def build_agent(mode: str):
 
     tools = []
     if mode == "news":
-        tools = [
-            Tool(
-                name="web_search",
-                func=web_search,
-                description="Search the web for recent or factual information.",
-            ),
-            Tool(
-                name="scrape_page",
-                func=scrape_page,
-                description="Scrape a webpage for more detail.",
-            ),
-        ]
+        tools = [web_search, scrape_page]
 
     prompt = ChatPromptTemplate.from_messages(
         [
