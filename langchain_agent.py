@@ -9,9 +9,13 @@ except ImportError:
     # Older LangChain fallback
     from langchain.callbacks.base import BaseCallbackHandler
 from langchain_community.chat_models import ChatOllama
-from langchain.agents import initialize_agent, AgentType
+from langchain.agents import AgentType
+from langchain.agents.initialize import initialize_agent
 from langchain.tools import Tool
-from langchain.schema import SystemMessage
+try:
+    from langchain_core.messages import SystemMessage
+except ImportError:
+    from langchain.schema import SystemMessage
 from ddgs import DDGS
 import trafilatura
 
