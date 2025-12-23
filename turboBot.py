@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands, tasks
 from discord.utils import escape_mentions
 from dotenv import load_dotenv
+from turboBot.langchain_agent import run_agent
 load_dotenv()
 AGENT_DEBUG = os.getenv("AGENT_DEBUG", "false").lower() in ("1", "true", "yes")
 
@@ -1216,7 +1217,7 @@ async def askollama(ctx, *, prompt: str = None):
     status_message = await ctx.send("🤖 Contacting Ollama...")
 
     try:
-        reply = await agent_answer(cleaned_prompt)
+        reply = await asyncio.to_thread(run_agent, cleaned_prompt)
         if not reply:
             reply = "(Ollama returned an empty response.)"
 
@@ -1242,7 +1243,7 @@ async def handle_ai_channel_message(message):
 
     try:
         async with message.channel.typing():
-            reply = await query_ollama(prompt)
+            reply = await asyncio.to_thread(run_agent, prompt)
     except Exception as exc:
         await message.channel.send(f"⚠️ I couldn't reach the AI service: {exc}")
         return

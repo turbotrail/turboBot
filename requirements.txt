@@ -6,3 +6,6 @@ yt-dlp
 dotenv
 aiohttp
 ddgs
+langchain 
+langchain-community
+trafilatura
