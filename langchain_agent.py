@@ -9,7 +9,12 @@ except ImportError:
     # Older LangChain fallback
     from langchain.callbacks.base import BaseCallbackHandler
 from langchain_community.chat_models import ChatOllama
-from langchain.agents import AgentType
+try:
+    # LangChain >= 0.1.x
+    from langchain.agents.agent_types import AgentType
+except ImportError:
+    # Older LangChain fallback
+    from langchain.agents import AgentType
 from langchain.agents.initialize import initialize_agent
 from langchain.tools import Tool
 try:
