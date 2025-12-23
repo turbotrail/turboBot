@@ -9,12 +9,6 @@ except ImportError:
     # Older LangChain fallback
     from langchain.callbacks.base import BaseCallbackHandler
 from langchain_community.chat_models import ChatOllama
-try:
-    # LangChain >= 0.1.x
-    from langchain.agents.agent_types import AgentType
-except ImportError:
-    # Older LangChain fallback
-    from langchain.agents import AgentType
 from langchain.agents.initialize import initialize_agent
 from langchain.tools import Tool
 try:
@@ -158,7 +152,7 @@ def build_agent(mode: str):
     agent = initialize_agent(
         tools=tools,
         llm=llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        agent="zero-shot-react-description",
         verbose=False,
         max_iterations=5,
         early_stopping_method="generate",
