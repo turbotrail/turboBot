@@ -1241,11 +1241,21 @@ async def handle_ai_channel_message(message):
 
     prompt = build_ai_chat_prompt(history)
 
+    import traceback
+
     try:
         async with message.channel.typing():
             reply = await asyncio.to_thread(run_agent, prompt)
     except Exception as exc:
-        await message.channel.send(f"⚠️ I couldn't reach the AI service: {exc}")
+        # Log full traceback for systemd / journalctl
+        traceback.print_exc()
+
+        # Send safe but informative message to Discord
+        error_text = repr(exc) if exc else "Unknown error (check server logs)"
+        await message.channel.send(
+            f"⚠️ I couldn't reach the AI service.\n"
+            f"**Error:** `{error_text}`"
+        )
         return
 
     if not reply:
