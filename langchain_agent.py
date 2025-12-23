@@ -1,20 +1,12 @@
 import os
 import sqlite3
 import time
-from typing import Generator
-try:
-    # LangChain >= 0.1.x
-    from langchain_core.callbacks import BaseCallbackHandler
-except ImportError:
-    # Older LangChain fallback
-    from langchain.callbacks.base import BaseCallbackHandler
 from langchain_community.chat_models import ChatOllama
-from langchain.agents.initialize import initialize_agent
+from langchain.agents import AgentExecutor
+from langchain.agents.react.agent import create_react_agent
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
 from langchain.tools import Tool
-try:
-    from langchain_core.messages import SystemMessage
-except ImportError:
-    from langchain.schema import SystemMessage
 from ddgs import DDGS
 import trafilatura
 
@@ -55,20 +47,6 @@ def cache_set(query: str, answer: str):
     conn.close()
 
 init_cache()
-
-# -------------------------
-# STREAMING CALLBACK
-# -------------------------
-
-class StreamingHandler(BaseCallbackHandler):
-    def __init__(self):
-        self.chunks = []
-
-    def on_llm_new_token(self, token: str, **kwargs):
-        self.chunks.append(token)
-
-    def get_text(self):
-        return "".join(self.chunks)
 
 
 # -------------------------
@@ -113,35 +91,31 @@ def classify_query(query: str) -> str:
 # -------------------------
 
 def build_agent(mode: str):
-    callbacks = []
     llm = ChatOllama(
         model=OLLAMA_MODEL,
         base_url=OLLAMA_BASE_URL,
         temperature=0.2 if mode == "theory" else 0.1,
-        callbacks=callbacks,
-        streaming=True,
     )
 
     tools = []
     if mode == "news":
-        tools.append(
+        tools = [
             Tool(
                 name="web_search",
                 func=web_search,
                 description="Search the web for recent or factual information.",
-            )
-        )
-        tools.append(
+            ),
             Tool(
                 name="scrape_page",
                 func=scrape_page,
                 description="Scrape a webpage for more detail if needed.",
-            )
-        )
+            ),
+        ]
 
-    system = SystemMessage(
+    system_prompt = SystemMessage(
         content=(
-            f"You are a {mode} assistant.\n"
+            f"You are a {mode} research assistant.\n"
+            "- Use tools when required\n"
             "- Cite sources using [SOURCE: url]\n"
             "- Never invent facts\n"
             "- If unsure, say so\n"
@@ -149,17 +123,28 @@ def build_agent(mode: str):
         )
     )
 
-    agent = initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent="zero-shot-react-description",
-        verbose=False,
-        max_iterations=5,
-        early_stopping_method="generate",
-        system_message=system,
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            system_prompt,
+            ("human", "{input}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ]
     )
 
-    return agent
+    agent = create_react_agent(
+        llm=llm,
+        tools=tools,
+        prompt=prompt,
+    )
+
+    executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=False,
+        max_iterations=5,
+    )
+
+    return executor
 
 
 _agents = {}
@@ -177,7 +162,7 @@ def run_agent(query: str, stream: bool = False):
 
     agent = _agents[mode]
 
-    result = agent.run(query)
+    result = agent.invoke({"input": query})["output"]
 
     # Cache result
     cache_set(query, result)
