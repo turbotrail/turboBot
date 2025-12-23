@@ -3,10 +3,11 @@ import sqlite3
 import time
 from typing import List
 
-from langchain.agents import create_agent
+from langchain.agents import AgentExecutor
+from langchain.agents.react.agent import create_react_agent
 from langchain_community.chat_models import ChatOllama
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain.tools import tool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.tools import Tool
 
 from ddgs import DDGS
 import trafilatura
@@ -51,10 +52,9 @@ init_cache()
 
 
 # -------------------------
-# TOOLS (using @tool)
+# TOOLS (without @tool decorator)
 # -------------------------
 
-@tool
 def web_search(query: str) -> str:
     """Search the web for current or factual information. Always include sources."""
     results = []
@@ -66,7 +66,6 @@ def web_search(query: str) -> str:
     return "\n".join(results) or "No search results."
 
 
-@tool
 def scrape_page(url: str) -> str:
     """Scrape a webpage to extract detailed information. Preserve the source."""
     try:
@@ -89,11 +88,11 @@ def classify_query(query: str) -> str:
 
 
 # -------------------------
-# BUILD AGENT (LangGraph API)
+# BUILD AGENT (ReAct agent for Ollama)
 # -------------------------
 
 def build_agent(mode: str):
-    model = ChatOllama(
+    llm = ChatOllama(
         model=OLLAMA_MODEL,
         base_url=OLLAMA_BASE_URL,
         temperature=0.2 if mode == "theory" else 0.1,
@@ -101,31 +100,52 @@ def build_agent(mode: str):
 
     tools = []
     if mode == "news":
-        tools = [web_search, scrape_page]
+        tools = [
+            Tool(
+                name="web_search",
+                func=web_search,
+                description="Search the web for recent or factual information.",
+            ),
+            Tool(
+                name="scrape_page",
+                func=scrape_page,
+                description="Scrape a webpage for more detail.",
+            ),
+        ]
 
-    system_prompt = SystemMessage(
-        content=(
-            f"You are a {mode} research assistant.\n"
-            "- Decide when to use tools\n"
-            "- Cite sources using [SOURCE: url]\n"
-            "- Never invent facts\n"
-            "- If information cannot be verified, say so\n"
-            "- Keep answers under 120 words\n"
-        )
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                f"You are a {mode} research assistant.\n"
+                "- Decide when to use tools\n"
+                "- Cite sources using [SOURCE: url]\n"
+                "- Never invent facts\n"
+                "- If unsure, say so\n"
+                "- Keep answers under 120 words",
+            ),
+            ("human", "{input}"),
+            ("assistant", "{agent_scratchpad}"),
+        ]
     )
 
-    agent = create_agent(
-        model=model,
+    agent = create_react_agent(
+        llm=llm,
         tools=tools,
-        system_prompt=system_prompt,
+        prompt=prompt,
     )
 
-    return agent
+    return AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=False,
+        max_iterations=5,
+    )
 
 
 _agents = {}
 
-def run_agent(query: str):
+async def run_agent(query: str):
     cached = cache_get(query)
     if cached:
         return cached
@@ -137,17 +157,7 @@ def run_agent(query: str):
 
     agent = _agents[mode]
 
-    result = agent.invoke(
-        {
-            "messages": [
-                HumanMessage(content=query)
-            ]
-        }
-    )
-
-    # Extract final assistant message
-    messages = result.get("messages", [])
-    answer = messages[-1].content if messages else ""
+    answer = await agent.arun(query)
 
     cache_set(query, answer)
     return answer
