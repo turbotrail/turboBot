@@ -18,7 +18,7 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.0.242:11434")
-DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_ALLOWED_ROLE = "AI"
 OLLAMA_REQUIRE_MANAGE_MESSAGES = os.getenv("OLLAMA_REQUIRE_MANAGE_MESSAGES", "true").lower() not in ("false", "0", "off", "no")
 OLLAMA_MAX_PROMPT_LENGTH = int(os.getenv("OLLAMA_MAX_PROMPT_LENGTH", "3500"))
