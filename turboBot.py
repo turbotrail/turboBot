@@ -18,7 +18,7 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.0.242:11434")
-DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_ALLOWED_ROLE = "AI"
 OLLAMA_REQUIRE_MANAGE_MESSAGES = os.getenv("OLLAMA_REQUIRE_MANAGE_MESSAGES", "true").lower() not in ("false", "0", "off", "no")
 OLLAMA_MAX_PROMPT_LENGTH = int(os.getenv("OLLAMA_MAX_PROMPT_LENGTH", "3500"))
@@ -884,14 +884,56 @@ async def cancelreminder(ctx):
 
 # Ollama Integration
 async def query_ollama(prompt, model=DEFAULT_OLLAMA_MODEL):
-    """Send a prompt to the configured Ollama instance and return the response text."""
+    """
+    Send a prompt to Ollama, augmented with DuckDuckGo web search context.
+
+    Flow:
+    1. Perform DuckDuckGo search for the prompt
+    2. Extract short snippets (titles + summaries)
+    3. Inject them as contextual grounding into the LLM prompt
+    """
+
     if not OLLAMA_BASE_URL:
         raise RuntimeError("OLLAMA_BASE_URL is not configured.")
+
+    # --- DuckDuckGo Search (lightweight, free) ---
+    try:
+        from ddgs import DDGS
+
+        search_snippets = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(prompt, max_results=3):
+                title = r.get("title", "")
+                body = r.get("body", "")
+                href = r.get("href", "")
+                snippet = f"- {title}: {body} ({href})"
+                search_snippets.append(snippet)
+
+        web_context = "\n".join(search_snippets)
+    except Exception as e:
+        web_context = "(Web search unavailable)"
+
+    # --- Augmented Prompt ---
+    augmented_prompt = f"""
+You are an AI assistant.
+
+Use the following web search context to ground your answer.
+If the context is insufficient, rely on general knowledge and say so clearly.
+Do NOT fabricate citations.
+
+Web search results:
+{web_context}
+
+User question:
+{prompt}
+
+Answer:
+""".strip()
 
     url = OLLAMA_BASE_URL.rstrip("/") + "/api/generate"
     payload = {
         "model": model,
-        "prompt": prompt,
+        "prompt": augmented_prompt,
         "stream": False
     }
 
@@ -901,9 +943,13 @@ async def query_ollama(prompt, model=DEFAULT_OLLAMA_MODEL):
             async with session.post(url, json=payload) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise RuntimeError(f"Ollama error {response.status}: {error_text.strip()[:200]}")
+                    raise RuntimeError(
+                        f"Ollama error {response.status}: {error_text.strip()[:200]}"
+                    )
+
                 data = await response.json()
                 return data.get("response", "").strip()
+
         except aiohttp.ClientError as exc:
             raise RuntimeError(f"Network error contacting Ollama: {exc}")
 
