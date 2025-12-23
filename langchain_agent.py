@@ -3,7 +3,7 @@ import sqlite3
 import time
 from typing import List
 
-from langchain_classic.agents.react.agent import create_react_agent
+from langchain_classic.agents.react.agent import create_react_agent,AgentExecutor
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.tools import tool
@@ -125,8 +125,10 @@ def build_agent(mode: str):
         tools=tools,
         prompt=prompt,
     )
+    agent_executor = AgentExecutor(agent=agent, tools=tools)
+    
 
-    return agent.invoke()
+    return agent_executor
 
 
 _agents = {}
@@ -143,7 +145,7 @@ async def run_agent(query: str):
 
     agent = _agents[mode]
 
-    answer = await agent.arun(query)
+    answer = await agent.invoke({"input": query})
 
     cache_set(query, answer)
     return answer
