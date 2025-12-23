@@ -882,6 +882,31 @@ async def cancelreminder(ctx):
     await ctx.send(f"🛑 Reminder canceled for {ctx.author.mention}.")
 
 
+# -------------------------
+# Agent Safety & Verification Utilities
+# -------------------------
+
+def is_latest_query(prompt: str) -> bool:
+    keywords = ("latest", "newest", "most recent", "recent upload", "today")
+    return any(k in prompt.lower() for k in keywords)
+
+
+def is_youtube_creator_query(prompt: str) -> bool:
+    creators = ("veritasium", "linus tech tips", "mrbeast", "mark rober")
+    return any(c in prompt.lower() for c in creators)
+
+
+def is_authoritative_source(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+SAFE_REFUSAL_LATEST = (
+    "I can’t reliably confirm the *latest* update without verifying the "
+    "official source.\n\n"
+    "Please check the official channel here:\n"
+    "https://www.youtube.com/@veritasium/videos"
+)
+
 # Ollama Integration
 async def query_ollama(prompt, model=DEFAULT_OLLAMA_MODEL):
     """
@@ -938,25 +963,42 @@ User question:
         try:
             from ddgs import DDGS
 
+            # Domain-aware search rewrite
+            if is_youtube_creator_query(prompt):
+                search_query = "Veritasium official YouTube channel latest video"
+            else:
+                search_query = prompt
+
             with DDGS() as ddgs:
-                results = list(ddgs.text(prompt, max_results=5))
+                results = list(ddgs.text(search_query, max_results=5))
 
             for r in results:
+                href = r.get("href", "")
                 title = r.get("title", "")
                 body = r.get("body", "")
-                href = r.get("href", "")
+
+                # Only trust authoritative sources for "latest"
+                if is_latest_query(prompt) and not is_authoritative_source(href):
+                    continue
+
                 sources.append(href)
                 web_context += f"- {title}: {body} ({href})\n"
 
         except Exception:
-            web_context = "Web search attempted but no results were retrieved."
+            web_context = ""
 
     # -------------------------
     # STEP 3: Optional scraping (only if search was weak)
     # -------------------------
     scraped_content = ""
 
-    if do_search and len(web_context.strip()) < 200 and sources:
+    if (
+        do_search
+        and is_latest_query(prompt)
+        and sources
+        and any(is_authoritative_source(s) for s in sources)
+        and len(web_context.strip()) < 200
+    ):
         try:
             import aiohttp
             import trafilatura
@@ -972,6 +1014,13 @@ User question:
             pass
 
     # -------------------------
+    # FINAL VERIFICATION GATE
+    # -------------------------
+    if is_latest_query(prompt) and is_youtube_creator_query(prompt):
+        if not any(is_authoritative_source(s) for s in sources):
+            return SAFE_REFUSAL_LATEST
+
+    # -------------------------
     # STEP 4: Final grounded answer
     # -------------------------
     final_prompt = f"""
@@ -980,9 +1029,10 @@ You are Proton bot, a helpful assistant.
 Answer the user's question clearly and concisely.
 
 Rules:
-- Use web information ONLY if provided
-- Do NOT fabricate sources
-- If information may be outdated, say so
+- Never guess or invent "latest" information
+- Use web data ONLY if authoritative sources are present
+- If verification is incomplete, clearly say so
+- Do NOT fabricate titles, dates, or URLs
 - Keep response under 120 words
 
 Web search context:
