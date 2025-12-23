@@ -1,9 +1,8 @@
 discord.py
-asyncio
 ffmpeg
 PyNaCl
 yt-dlp
-dotenv
+python-dotenv
 aiohttp
 ddgs
 langchain 
