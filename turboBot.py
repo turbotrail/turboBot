@@ -11,7 +11,7 @@ import discord
 from discord.ext import commands, tasks
 from discord.utils import escape_mentions
 from dotenv import load_dotenv
-from turboBot.langchain_agent import run_agent
+from langchain_agent import run_agent
 load_dotenv()
 AGENT_DEBUG = os.getenv("AGENT_DEBUG", "false").lower() in ("1", "true", "yes")
 
