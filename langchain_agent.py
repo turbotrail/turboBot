@@ -2,7 +2,12 @@ import os
 import sqlite3
 import time
 from typing import Generator
-from langchain.callbacks.base import BaseCallbackHandler
+try:
+    # LangChain >= 0.1.x
+    from langchain_core.callbacks import BaseCallbackHandler
+except ImportError:
+    # Older LangChain fallback
+    from langchain.callbacks.base import BaseCallbackHandler
 from langchain_community.chat_models import ChatOllama
 from langchain.agents import initialize_agent, AgentType
 from langchain.tools import Tool
