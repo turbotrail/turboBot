@@ -1,3 +1,5 @@
+import json
+AGENT_DEBUG = os.getenv("AGENT_DEBUG", "false").lower() in ("1", "true", "yes")
 import asyncio
 import aiohttp
 import os
@@ -907,6 +909,122 @@ SAFE_REFUSAL_LATEST = (
     "https://www.youtube.com/@veritasium/videos"
 )
 
+# -------------------------
+# Tool Implementations (Dumb, Reliable)
+# -------------------------
+
+async def tool_search(query: str) -> str:
+    """DuckDuckGo search tool"""
+    try:
+        from ddgs import DDGS
+        results_text = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=6):
+                title = r.get("title", "")
+                body = r.get("body", "")
+                href = r.get("href", "")
+                results_text.append(f"- {title}: {body} ({href})")
+        return "\n".join(results_text) or "(no results)"
+    except Exception as e:
+        return f"(search failed: {e})"
+
+
+async def tool_scrape(url: str) -> str:
+    """Lightweight webpage scraper"""
+    try:
+        import trafilatura
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
+                html = await resp.text()
+                text = trafilatura.extract(html)
+                return (text or "")[:1500]
+    except Exception as e:
+        return f"(scrape failed: {e})"
+
+
+async def tool_answer(prompt: str, model: str) -> str:
+    """Final answer generation"""
+    return await _ollama_raw(prompt, model)
+
+# -------------------------
+# Agent Prompt Builder
+# -------------------------
+
+def build_agent_prompt(user_query, context, steps):
+    return f"""
+You are an autonomous question-answering agent.
+
+You have access to tools:
+- search(query)
+- scrape(url)
+- answer(text)
+
+Rules:
+- Use search for current events, news, or "latest" queries
+- Use scrape ONLY if search snippets are insufficient
+- Never invent titles, dates, or URLs
+- If verification is impossible, choose "refuse"
+- Prefer fewer steps
+
+Respond ONLY as JSON:
+{{
+  "thought": "short reasoning",
+  "action": "search | scrape | answer | refuse",
+  "input": "tool input or final answer"
+}}
+
+User question:
+{user_query}
+
+Context so far:
+{context}
+
+Previous steps:
+{steps}
+""".strip()
+
+# -------------------------
+# Agent Controller Loop
+# -------------------------
+
+async def agent_answer(user_query, model=DEFAULT_OLLAMA_MODEL, max_steps=5):
+    context = ""
+    steps = []
+
+    for _ in range(max_steps):
+        prompt = build_agent_prompt(user_query, context, steps)
+        raw = await _ollama_raw(prompt, model)
+
+        try:
+            decision = json.loads(raw)
+        except Exception:
+            return "⚠️ I couldn’t reason about this reliably."
+
+        action = decision.get("action")
+        inp = decision.get("input", "")
+
+        steps.append(decision)
+
+        if action == "search":
+            result = await tool_search(inp or user_query)
+            context += f"\nSEARCH RESULTS:\n{result}"
+
+        elif action == "scrape":
+            result = await tool_scrape(inp)
+            context += f"\nSCRAPED CONTENT:\n{result}"
+
+        elif action == "answer":
+            if AGENT_DEBUG:
+                return f"🧠 Agent steps:\n```json\n{json.dumps(steps, indent=2)}\n```\n\n{inp}"
+            return inp
+
+        elif action == "refuse":
+            if AGENT_DEBUG:
+                return f"🧠 Agent steps:\n```json\n{json.dumps(steps, indent=2)}\n```\n\n{inp or 'I can’t reliably verify this information.'}"
+            return inp or "I can’t reliably verify this information."
+
+    return "⚠️ I couldn’t complete this request in time."
+
 # Ollama Integration
 async def query_ollama(prompt, model=DEFAULT_OLLAMA_MODEL):
     """
@@ -1098,7 +1216,7 @@ async def askollama(ctx, *, prompt: str = None):
     status_message = await ctx.send("🤖 Contacting Ollama...")
 
     try:
-        reply = await query_ollama(cleaned_prompt)
+        reply = await agent_answer(cleaned_prompt)
         if not reply:
             reply = "(Ollama returned an empty response.)"
 
