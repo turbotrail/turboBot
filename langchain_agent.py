@@ -3,7 +3,8 @@ import sqlite3
 import time
 from typing import List
 
-from langchain_classic.agents.react.agent import create_react_agent,AgentExecutor
+from langchain_classic.agents.react.agent import create_react_agent
+from langchain_classic.agents.agent import AgentExecutor
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.tools import tool
@@ -109,7 +110,8 @@ def build_agent(mode: str):
             (
                 "system",
                 f"You are a {mode} research assistant.\n"
-                "- Decide when to use tools\n"
+                "you have access to the following tools: {tools}\n"
+                "- Decide when to use one of the tools \"{tool_names}\"\n"
                 "- Cite sources using [SOURCE: url]\n"
                 "- Never invent facts\n"
                 "- If unsure, say so\n"
