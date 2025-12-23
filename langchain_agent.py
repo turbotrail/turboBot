@@ -3,7 +3,12 @@ import sqlite3
 import time
 from typing import List
 
-from langchain.agents import AgentExecutor
+try:
+    # Newer LangChain versions
+    from langchain.agents.agent import AgentExecutor
+except ImportError:
+    # Older LangChain fallback
+    from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
