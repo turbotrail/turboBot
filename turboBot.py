@@ -885,44 +885,111 @@ async def cancelreminder(ctx):
 # Ollama Integration
 async def query_ollama(prompt, model=DEFAULT_OLLAMA_MODEL):
     """
-    Send a prompt to Ollama, augmented with DuckDuckGo web search context.
+    Agentic Ollama query function.
 
-    Flow:
-    1. Perform DuckDuckGo search for the prompt
-    2. Extract short snippets (titles + summaries)
-    3. Inject them as contextual grounding into the LLM prompt
+    Capabilities:
+    - Decide whether web search is required
+    - Perform DuckDuckGo search when needed
+    - Optionally scrape top pages for more context
+    - Ground final answer with or without web data
     """
 
     if not OLLAMA_BASE_URL:
         raise RuntimeError("OLLAMA_BASE_URL is not configured.")
 
-    # --- DuckDuckGo Search (lightweight, free) ---
-    try:
-        from ddgs import DDGS
+    # -------------------------
+    # STEP 1: Decide if search is needed
+    # -------------------------
+    decision_prompt = f"""
+You are a decision-making assistant.
 
-        search_snippets = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(prompt, max_results=3):
+Given the user question below, decide whether web search is REQUIRED.
+
+Search is REQUIRED if:
+- The question is about recent events, news, sports, or updates
+- The question asks for latest information
+- The question depends on external factual sources
+
+Search is NOT required if:
+- The question is conceptual, theoretical, or general knowledge
+
+Respond ONLY as JSON:
+{{ "search": true/false, "reason": "short explanation" }}
+
+User question:
+{prompt}
+"""
+
+    decision_response = await _ollama_raw(decision_prompt, model)
+    try:
+        import json
+        decision = json.loads(decision_response)
+        do_search = decision.get("search", False)
+    except Exception:
+        do_search = False  # safe default
+
+    web_context = ""
+    sources = []
+
+    # -------------------------
+    # STEP 2: Web search (if needed)
+    # -------------------------
+    if do_search:
+        try:
+            from ddgs import DDGS
+
+            with DDGS() as ddgs:
+                results = list(ddgs.text(prompt, max_results=5))
+
+            for r in results:
                 title = r.get("title", "")
                 body = r.get("body", "")
                 href = r.get("href", "")
-                snippet = f"- {title}: {body} ({href})"
-                search_snippets.append(snippet)
+                sources.append(href)
+                web_context += f"- {title}: {body} ({href})\n"
 
-        web_context = "\n".join(search_snippets)
-    except Exception as e:
-        web_context = "(Web search unavailable)"
+        except Exception:
+            web_context = "Web search attempted but no results were retrieved."
 
-    # --- Augmented Prompt ---
-    augmented_prompt = f"""
-You are an AI assistant.
+    # -------------------------
+    # STEP 3: Optional scraping (only if search was weak)
+    # -------------------------
+    scraped_content = ""
 
-Use the following web search context to ground your answer.
-If the context is insufficient, rely on general knowledge and say so clearly.
-Do NOT fabricate citations.
+    if do_search and len(web_context.strip()) < 200 and sources:
+        try:
+            import aiohttp
+            import trafilatura
 
-Web search results:
-{web_context}
+            async with aiohttp.ClientSession() as session:
+                for url in sources[:2]:  # hard cap: 2 pages
+                    async with session.get(url, timeout=15) as resp:
+                        html = await resp.text()
+                        text = trafilatura.extract(html)
+                        if text:
+                            scraped_content += f"\nSource ({url}):\n{text[:1500]}\n"
+        except Exception:
+            pass
+
+    # -------------------------
+    # STEP 4: Final grounded answer
+    # -------------------------
+    final_prompt = f"""
+You are Proton bot, a helpful assistant.
+
+Answer the user's question clearly and concisely.
+
+Rules:
+- Use web information ONLY if provided
+- Do NOT fabricate sources
+- If information may be outdated, say so
+- Keep response under 120 words
+
+Web search context:
+{web_context or "(none)"}
+
+Scraped content:
+{scraped_content or "(none)"}
 
 User question:
 {prompt}
@@ -930,28 +997,25 @@ User question:
 Answer:
 """.strip()
 
+    return await _ollama_raw(final_prompt, model)
+
+
+async def _ollama_raw(prompt, model):
+    """Low-level Ollama call without agent logic."""
     url = OLLAMA_BASE_URL.rstrip("/") + "/api/generate"
     payload = {
         "model": model,
-        "prompt": augmented_prompt,
+        "prompt": prompt,
         "stream": False
     }
 
     timeout = aiohttp.ClientTimeout(total=120)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        try:
-            async with session.post(url, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise RuntimeError(
-                        f"Ollama error {response.status}: {error_text.strip()[:200]}"
-                    )
-
-                data = await response.json()
-                return data.get("response", "").strip()
-
-        except aiohttp.ClientError as exc:
-            raise RuntimeError(f"Network error contacting Ollama: {exc}")
+        async with session.post(url, json=payload) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Ollama error {response.status}")
+            data = await response.json()
+            return (data.get("response") or "").strip()
 
 
 @bot.command()
