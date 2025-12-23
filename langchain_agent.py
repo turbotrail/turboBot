@@ -139,6 +139,8 @@ def build_agent(mode: str):
 
 _agents = {}
 
+import asyncio
+
 async def run_agent(query: str):
     cached = cache_get(query)
     if cached:
@@ -151,7 +153,15 @@ async def run_agent(query: str):
 
     agent = _agents[mode]
 
-    answer = agent.invoke({"input": query})
+    # 🔑 run blocking agent in a thread
+    answer = await asyncio.to_thread(
+        agent.invoke,
+        {"input": query}
+    )
 
-    cache_set(query, answer["output"])
-    return answer["output"]
+    # AgentExecutor returns dict
+    if isinstance(answer, dict):
+        answer = answer.get("output", "")
+
+    cache_set(query, answer)
+    return answer
