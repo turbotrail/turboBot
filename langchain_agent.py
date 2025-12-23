@@ -154,4 +154,4 @@ async def run_agent(query: str):
     answer = agent.invoke({"input": query})
 
     # cache_set(query, answer)
-    return answer
+    return answer["output"]
