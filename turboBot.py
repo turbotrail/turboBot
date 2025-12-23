@@ -1217,7 +1217,7 @@ async def askollama(ctx, *, prompt: str = None):
     status_message = await ctx.send("🤖 Contacting Ollama...")
 
     try:
-        reply = await asyncio.to_thread(run_agent, cleaned_prompt)
+        reply = await run_agent(cleaned_prompt)
         if not reply:
             reply = "(Ollama returned an empty response.)"
 
@@ -1245,7 +1245,7 @@ async def handle_ai_channel_message(message):
 
     try:
         async with message.channel.typing():
-            reply = await asyncio.to_thread(run_agent, prompt)
+            reply = await run_agent(prompt)
     except Exception as exc:
         # Log full traceback for systemd / journalctl
         traceback.print_exc()
