@@ -1,3 +1,5 @@
+[![Deploy Discord Bot](https://github.com/turbotrail/turboBot/actions/workflows/deploy.yml/badge.svg)](https://github.com/turbotrail/turboBot/actions/workflows/deploy.yml)
+
 # TurboBot (Proton)
 
 TurboBot (also known as Proton) is a feature-rich, self-hosted Discord bot designed to run on a Raspberry Pi 5. It combines high-quality music playback, AI capabilities powered by Ollama, and essential community management tools into a single, efficient package.
